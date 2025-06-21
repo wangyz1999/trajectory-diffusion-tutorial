@@ -4,7 +4,9 @@ Generate 2D trajectories using text-conditioned diffusion models with mathematic
 
 Trajectory generation is valuable for robotics path planning, autonomous navigation, animation, and motion synthesis. This repository serves as a toy example for learning text-conditioned diffusion on simple 2D geometric shapes.
 
-![Sample Trajectories](imgs/image.png)
+
+![Comparison](imgs/compare.png)
+
 
 ## Quick Start
 
@@ -22,7 +24,7 @@ python trainer.py
 python inference.py --exp_idx 0 --num_samples 20 --create_plots
 ```
 
-## Denoising Process
+## Denoising Process Visualized
 
 <div align="center">
   <img src="imgs/process1.gif" width="30%" />
@@ -30,9 +32,8 @@ python inference.py --exp_idx 0 --num_samples 20 --create_plots
   <img src="imgs/process3.gif" width="30%" />
 </div>
 
-## Results
 
-![Comparison](imgs/compare.png)
+
 
 ## Features & Architecture
 
@@ -56,9 +57,13 @@ python inference.py --exp_idx 0 --num_samples 20 --create_plots
 
 ## Interactive Generation
 
+
 ```bash
 cd flask_app
 python app.py
 ```
 
 Open http://localhost:5000 for interactive trajectory generation.
+
+
+![Sample Trajectories](imgs/image.png)
