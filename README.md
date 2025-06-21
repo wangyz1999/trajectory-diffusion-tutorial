@@ -4,7 +4,7 @@ Generate 2D trajectories using text-conditioned diffusion models with mathematic
 
 Trajectory generation is valuable for robotics path planning, autonomous navigation, animation, and motion synthesis. This repository serves as a toy example for learning text-conditioned diffusion on simple 2D geometric shapes.
 
-This repo uses [SentenceTransformer](https://sbert.net/) for text embedding, [UNet1D](https://huggingface.co/docs/diffusers/en/api/models/unet) for trajectory generation, and [Denoising Diffusion Probabilistic Models (DDPM)](https://arxiv.org/abs/2006.11239)
+This repo uses [SentenceTransformer](https://sbert.net/) for text embedding, [UNet1D](https://huggingface.co/docs/diffusers/en/api/models/unet) for trajectory generation, and [Denoising Diffusion Probabilistic Models (DDPM)](https://arxiv.org/abs/2006.11239), implemented in PyTorch.
 
 ![Comparison](imgs/compare.png)
 
