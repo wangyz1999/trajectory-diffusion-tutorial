@@ -22,7 +22,7 @@ import utils
 
 
 class TrajectoryDiffusionTrainer:
-    """Trainer for trajectory diffusion model."""
+    """Trainer for text-conditioned trajectory diffusion model."""
     
     def __init__(
         self,
@@ -80,6 +80,7 @@ class TrajectoryDiffusionTrainer:
                 'in_channels': self.model.in_channels,
                 'out_channels': self.model.out_channels,
                 'time_emb_dim': self.model.time_emb_dim,
+                'text_emb_dim': self.model.text_emb_dim,
             },
             'scheduler_params': {
                 'num_train_timesteps': self.scheduler.config.num_train_timesteps,
@@ -105,10 +106,11 @@ class TrajectoryDiffusionTrainer:
             json.dump(config, f, indent=2)
     
     def train_step(self, batch: Dict[str, torch.Tensor]) -> float:
-        """Single training step."""
+        """Single training step with text conditioning."""
         self.model.train()
         
         trajectories = batch['trajectory'].to(self.device)  # [batch, seq_len, 2]
+        text_embeddings = batch['text_embedding'].to(self.device)  # [batch, text_emb_dim]
         batch_size = trajectories.shape[0]
         
         # Transpose to [batch, 2, seq_len] for conv1d
@@ -126,8 +128,8 @@ class TrajectoryDiffusionTrainer:
         # Add noise to trajectories
         noisy_trajectories = self.scheduler.add_noise(trajectories, noise, timesteps)
         
-        # Predict noise
-        noise_pred = self.model(noisy_trajectories, timesteps)
+        # Predict noise with text conditioning
+        noise_pred = self.model(noisy_trajectories, timesteps, text_embeddings)
         
         # Handle potential size mismatch due to model architecture
         if noise_pred.shape != noise.shape:
@@ -149,7 +151,7 @@ class TrajectoryDiffusionTrainer:
         return loss.item()
     
     def validate(self) -> float:
-        """Validation step."""
+        """Validation step with text conditioning."""
         self.model.eval()
         total_loss = 0.0
         num_batches = 0
@@ -157,6 +159,7 @@ class TrajectoryDiffusionTrainer:
         with torch.no_grad():
             for batch in self.data_module.val_dataloader():
                 trajectories = batch['trajectory'].to(self.device)
+                text_embeddings = batch['text_embedding'].to(self.device)
                 batch_size = trajectories.shape[0]
                 
                 # Transpose to [batch, 2, seq_len]
@@ -174,8 +177,8 @@ class TrajectoryDiffusionTrainer:
                 # Add noise
                 noisy_trajectories = self.scheduler.add_noise(trajectories, noise, timesteps)
                 
-                # Predict noise
-                noise_pred = self.model(noisy_trajectories, timesteps)
+                # Predict noise with text conditioning
+                noise_pred = self.model(noisy_trajectories, timesteps, text_embeddings)
                 
                 # Handle potential size mismatch due to model architecture
                 if noise_pred.shape != noise.shape:
@@ -192,11 +195,21 @@ class TrajectoryDiffusionTrainer:
         
         return total_loss / num_batches if num_batches > 0 else 0.0
     
-    def train(self, num_epochs: int, save_every: int = 10, validate_every: int = 1):
-        """Main training loop."""
-        print(f"Starting training for {num_epochs} epochs...")
-        print(f"Device: {self.device}")
-        print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+    def train(self, num_epochs: int, save_every: int = 10, validate_every: int = 1, plot_every: int = 5):
+        """Main training loop for text-conditioned trajectory diffusion."""
+        print(f"🚀 Starting text-conditioned trajectory diffusion training for {num_epochs} epochs...")
+        print(f"📱 Device: {self.device}")
+        print(f"🔢 Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"📝 Text embedding dimension: {self.model.text_emb_dim}")
+        print(f"📊 Data statistics:")
+        sample_batch = self.data_module.get_sample_batch('train')
+        print(f"   • Trajectory shape: {sample_batch['trajectory'].shape}")
+        print(f"   • Text embedding shape: {sample_batch['text_embedding'].shape}")
+        print(f"   • Pattern types: {len(set(sample_batch['label_name']))}")
+        
+        # Generate initial test samples (epoch 0)
+        print("🎨 Generating initial test samples...")
+        self.plot_test_samples(0)
         
         start_time = time.time()
         
@@ -236,11 +249,19 @@ class TrajectoryDiffusionTrainer:
             if (epoch + 1) % save_every == 0:
                 self.save_checkpoint(f'checkpoint_epoch_{epoch+1}.pth')
             
+            # Generate test plots
+            if (epoch + 1) % plot_every == 0:
+                self.plot_test_samples(epoch + 1)
+            
             # Plot training curves
             self.plot_training_curves()
         
         # Final save
         self.save_checkpoint('final_model.pth')
+        
+        # Generate final comprehensive test samples
+        print("🎯 Generating final comprehensive test samples...")
+        self.plot_final_results()
         
         total_time = time.time() - start_time
         print(f"Training completed in {total_time:.2f} seconds")
@@ -276,6 +297,122 @@ class TrajectoryDiffusionTrainer:
         self.val_losses = checkpoint['val_losses']
         
         print(f"Checkpoint loaded: {filepath}")
+    
+    def generate_test_samples(self, n_samples: int = 12) -> tuple:
+        """Generate test samples during training to monitor progress."""
+        self.model.eval()
+        
+        # Get a sample batch from validation set
+        val_batch = self.data_module.get_sample_batch('val')
+        
+        # Select samples
+        n_samples = min(n_samples, len(val_batch['trajectory']))
+        real_trajectories = val_batch['trajectory'][:n_samples].numpy()  # [n_samples, seq_len, 2]
+        text_embeddings = val_batch['text_embedding'][:n_samples].to(self.device)  # [n_samples, text_emb_dim]
+        text_descriptions = val_batch['text_description'][:n_samples]
+        
+        # Generate trajectories using the diffusion process
+        with torch.no_grad():
+            # Start from pure noise
+            generated_trajectories = torch.randn(n_samples, 2, self.data_module.sequence_length).to(self.device)
+            
+            # Reverse diffusion process
+            for t in tqdm(reversed(range(self.scheduler.config.num_train_timesteps)), 
+                         desc="Generating samples", leave=False):
+                timesteps = torch.full((n_samples,), t, device=self.device).long()
+                
+                # Predict noise
+                noise_pred = self.model(generated_trajectories, timesteps, text_embeddings)
+                
+                # Remove predicted noise
+                generated_trajectories = self.scheduler.step(
+                    noise_pred, t, generated_trajectories
+                ).prev_sample
+        
+        # Convert to numpy and transpose back to [seq_len, 2] format
+        generated_trajectories = generated_trajectories.cpu().numpy().transpose(0, 2, 1)  # [n_samples, seq_len, 2]
+        
+        return real_trajectories, generated_trajectories, text_descriptions
+    
+    def plot_test_samples(self, epoch: int):
+        """Generate and plot test samples to monitor training progress."""
+        print(f"🎨 Generating test samples for epoch {epoch}...")
+        
+        try:
+            real_trajectories, generated_trajectories, text_descriptions = self.generate_test_samples(n_samples=6)
+            
+            # Plot training progress
+            save_path = os.path.join(self.exp_dir, f'training_progress_epoch_{epoch:03d}.png')
+            utils.plot_training_progress(
+                real_trajectories, 
+                generated_trajectories, 
+                text_descriptions,
+                epoch,
+                save_path=save_path,
+                n_samples=6
+            )
+            
+            print(f"✅ Test samples plotted and saved for epoch {epoch}")
+            
+        except Exception as e:
+            print(f"⚠️  Failed to generate test samples: {str(e)}")
+        
+        # Switch back to training mode
+        self.model.train()
+    
+    def plot_final_results(self):
+        """Generate comprehensive final results with diverse text prompts."""
+        print("🎨 Generating comprehensive final results...")
+        
+        try:
+            # Generate samples for each pattern type
+            pattern_types = self.data_module.full_dataset.unique_labels
+            final_trajectories = []
+            final_descriptions = []
+            
+            for pattern in pattern_types[:12]:  # Limit to 12 patterns for visualization
+                # Get sample text descriptions for this pattern
+                sample_texts = self.data_module.full_dataset.get_text_samples(pattern, 1)
+                if sample_texts:
+                    final_descriptions.append(sample_texts[0])
+                    
+                    # Encode the text
+                    text_embedding = self.data_module.encode_text([sample_texts[0]])
+                    text_embedding = text_embedding.to(self.device)
+                    
+                    # Generate trajectory
+                    with torch.no_grad():
+                        generated_traj = torch.randn(1, 2, self.data_module.sequence_length).to(self.device)
+                        
+                        # Reverse diffusion process
+                        for t in reversed(range(self.scheduler.config.num_train_timesteps)):
+                            timesteps = torch.full((1,), t, device=self.device).long()
+                            noise_pred = self.model(generated_traj, timesteps, text_embedding)
+                            generated_traj = self.scheduler.step(noise_pred, t, generated_traj).prev_sample
+                        
+                        # Convert to numpy
+                        generated_traj = generated_traj.cpu().numpy().transpose(0, 2, 1)[0]  # [seq_len, 2]
+                        final_trajectories.append(generated_traj)
+            
+            # Plot comprehensive results
+            if final_trajectories:
+                final_trajectories = np.array(final_trajectories)
+                save_path = os.path.join(self.exp_dir, 'comprehensive_text_conditioned_results.png')
+                utils.plot_text_conditioned_trajectories(
+                    final_trajectories,
+                    final_descriptions,
+                    title="Final Text-Conditioned Results",
+                    save_path=save_path,
+                    max_plots=12
+                )
+                
+                print(f"✅ Comprehensive final results saved")
+            
+        except Exception as e:
+            print(f"⚠️  Failed to generate final results: {str(e)}")
+        
+        # Switch back to training mode
+        self.model.train()
     
     def plot_training_curves(self):
         """Plot and save training curves."""
@@ -315,9 +452,10 @@ def create_trainer(
     sequence_length: int = 100,
     learning_rate: float = 1e-4,
     num_train_timesteps: int = 1000,
-    exp_name: str = "trajectory_diffusion"
+    text_emb_dim: int = 384,
+    exp_name: str = "text_conditioned_trajectory_diffusion"
 ) -> TrajectoryDiffusionTrainer:
-    """Create a configured trainer."""
+    """Create a configured trainer for text-conditioned trajectory diffusion."""
     
     # Create data module
     data_module = TrajectoryDataModule(
@@ -326,8 +464,11 @@ def create_trainer(
         sequence_length=sequence_length
     )
     
-    # Create model
-    model = create_model(sequence_length=sequence_length)
+    # Create text-conditioned model
+    model = create_model(
+        sequence_length=sequence_length,
+        text_emb_dim=text_emb_dim
+    )
     
     # Create scheduler
     scheduler = DDPMScheduler(
@@ -351,19 +492,21 @@ def create_trainer(
 
 
 if __name__ == "__main__":
-    # Create and run trainer
+    # Create and run text-conditioned trainer
     trainer = create_trainer(
         data_dir="data",
         batch_size=32,
         sequence_length=100,
         learning_rate=1e-4,
         num_train_timesteps=1000,
-        exp_name="trajectory_diffusion"
+        text_emb_dim=384,
+        exp_name="text_conditioned_trajectory_diffusion"
     )
     
-    # Train the model
+    # Train the text-conditioned model
     trainer.train(
         num_epochs=50,
         save_every=10,
-        validate_every=1
+        validate_every=1,
+        plot_every=5  # Generate test plots every 5 epochs
     ) 

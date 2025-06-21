@@ -282,6 +282,145 @@ def compute_trajectory_metrics(
     return metrics
 
 
+def plot_text_conditioned_trajectories(
+    trajectories: np.ndarray,
+    text_descriptions: List[str],
+    title: str = "Text-Conditioned Trajectories",
+    save_path: Optional[str] = None,
+    figsize: Tuple[int, int] = (15, 10),
+    max_plots: int = 12
+) -> None:
+    """
+    Plot trajectories with their corresponding text descriptions.
+    
+    Args:
+        trajectories: Array of trajectories [N, seq_len, 2]
+        text_descriptions: List of text descriptions
+        title: Plot title
+        save_path: Path to save plot
+        figsize: Figure size
+        max_plots: Maximum number of trajectories to plot
+    """
+    n_trajs = min(len(trajectories), len(text_descriptions), max_plots)
+    
+    # Determine subplot layout
+    if n_trajs <= 4:
+        rows, cols = 2, 2
+    elif n_trajs <= 6:
+        rows, cols = 2, 3
+    elif n_trajs <= 9:
+        rows, cols = 3, 3
+    else:
+        rows, cols = 3, 4
+    
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    if rows * cols == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+    
+    colors = plt.cm.tab10(np.linspace(0, 1, 10))
+    
+    for i in range(min(n_trajs, len(axes))):
+        traj = trajectories[i]
+        ax = axes[i]
+        
+        # Plot trajectory with gradient color
+        ax.plot(traj[:, 0], traj[:, 1], color=colors[i % 10], alpha=0.8, linewidth=2)
+        
+        # Mark start and end points
+        ax.plot(traj[0, 0], traj[0, 1], 'go', markersize=8, label='Start')
+        ax.plot(traj[-1, 0], traj[-1, 1], 'ro', markersize=8, label='End')
+        
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(-1.1, 1.1)
+        ax.set_ylim(-1.1, 1.1)
+        
+        # Wrap text description for better display
+        text = text_descriptions[i][:50] + "..." if len(text_descriptions[i]) > 50 else text_descriptions[i]
+        ax.set_title(f"{text}", fontsize=10, wrap=True)
+        
+        if i == 0:  # Only show legend on first plot
+            ax.legend(fontsize=8)
+    
+    # Remove empty subplots
+    for i in range(n_trajs, len(axes)):
+        fig.delaxes(axes[i])
+    
+    plt.suptitle(title, fontsize=16)
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Text-conditioned plot saved: {save_path}")
+        plt.close()  # Close to save memory
+    else:
+        plt.show()
+
+
+def plot_training_progress(
+    real_trajectories: np.ndarray,
+    generated_trajectories: np.ndarray,
+    text_descriptions: List[str],
+    epoch: int,
+    save_path: Optional[str] = None,
+    n_samples: int = 6
+) -> None:
+    """
+    Plot training progress showing real vs generated trajectories with text.
+    
+    Args:
+        real_trajectories: Real trajectory samples [N, seq_len, 2]
+        generated_trajectories: Generated trajectory samples [N, seq_len, 2]
+        text_descriptions: Text descriptions for trajectories
+        epoch: Current training epoch
+        save_path: Path to save plot
+        n_samples: Number of samples to show
+    """
+    fig, axes = plt.subplots(2, n_samples, figsize=(4*n_samples, 8))
+    
+    colors = ['blue', 'red']
+    labels = ['Real', 'Generated']
+    
+    for i in range(n_samples):
+        # Real trajectory
+        if i < len(real_trajectories):
+            real_traj = real_trajectories[i]
+            axes[0, i].plot(real_traj[:, 0], real_traj[:, 1], 
+                           color=colors[0], alpha=0.8, linewidth=2, label=labels[0])
+            axes[0, i].plot(real_traj[0, 0], real_traj[0, 1], 'go', markersize=6)
+            axes[0, i].plot(real_traj[-1, 0], real_traj[-1, 1], 'ro', markersize=6)
+        
+        # Generated trajectory
+        if i < len(generated_trajectories):
+            gen_traj = generated_trajectories[i]
+            axes[1, i].plot(gen_traj[:, 0], gen_traj[:, 1], 
+                           color=colors[1], alpha=0.8, linewidth=2, label=labels[1])
+            axes[1, i].plot(gen_traj[0, 0], gen_traj[0, 1], 'go', markersize=6)
+            axes[1, i].plot(gen_traj[-1, 0], gen_traj[-1, 1], 'ro', markersize=6)
+        
+        # Set properties for both rows
+        for row in range(2):
+            axes[row, i].set_aspect('equal')
+            axes[row, i].grid(True, alpha=0.3)
+            axes[row, i].set_xlim(-1.1, 1.1)
+            axes[row, i].set_ylim(-1.1, 1.1)
+            
+            if i < len(text_descriptions):
+                text = text_descriptions[i][:40] + "..." if len(text_descriptions[i]) > 40 else text_descriptions[i]
+                axes[row, i].set_title(f"{labels[row]}: {text}", fontsize=9)
+    
+    plt.suptitle(f'Training Progress - Epoch {epoch}', fontsize=16)
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Training progress plot saved: {save_path}")
+    
+    plt.close()  # Close to save memory during training
+
+
 def create_animation(trajectory: np.ndarray, save_path: str, fps: int = 10) -> None:
     """
     Create animated visualization of trajectory.

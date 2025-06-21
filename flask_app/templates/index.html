@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Trajectory Diffusion</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎨 Interactive Trajectory Diffusion</h1>
+            <p>Generate 2D trajectories from text descriptions in real-time</p>
+        </header>
+
+        <div class="main-content">
+            <div class="controls-panel">
+                <div class="input-group">
+                    <label for="text-prompt">Text Description:</label>
+                    <input type="text" id="text-prompt" placeholder="Enter trajectory description (e.g., 'A perfect circle')" value="A perfect circle">
+                </div>
+
+                <div class="input-group">
+                    <label>Generation Quality:</label>
+                    <div class="quality-info">
+                        <span class="quality-badge">🎯 High Quality (1000 steps)</span>
+                        <small>Full diffusion process for best results</small>
+                    </div>
+                </div>
+
+                <div class="button-group">
+                    <button id="generate-btn" class="generate-btn">
+                        <span class="btn-text">🚀 Generate Trajectory</span>
+                        <span class="btn-loader" style="display: none;">⏳ Generating...</span>
+                    </button>
+                    <button id="clear-btn" class="clear-btn">🗑️ Clear</button>
+                </div>
+                
+                <div class="progress-container" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <div class="progress-text" id="progress-text">0%</div>
+                </div>
+
+                <div class="status-panel">
+                    <div id="status-message" class="status-message">Ready to generate</div>
+                    <div id="connection-status" class="connection-status">🔴 Connecting...</div>
+                </div>
+            </div>
+
+            <div class="canvas-panel">
+                <div id="canvas-title-bar" class="canvas-title-bar">
+                    <h3 id="canvas-main-title">Trajectory Visualization</h3>
+                    <span id="canvas-step-info">Enter a description and click generate</span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="trajectory-canvas" width="600" height="600"></canvas>
+                    <div class="canvas-overlay">
+                        <div id="canvas-title">Trajectory Visualization</div>
+                        <div id="canvas-subtitle">Enter a description and click generate</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="examples-panel">
+            <h3>💡 Example Prompts:</h3>
+            <div class="example-buttons">
+                <button class="example-btn" data-prompt="A perfect circle">Circle</button>
+                <button class="example-btn" data-prompt="A spiral shape">Spiral</button>
+                <button class="example-btn" data-prompt="A zigzag pattern">Zigzag</button>
+                <button class="example-btn" data-prompt="A heart shape">Heart</button>
+                <button class="example-btn" data-prompt="A sine wave">Sine Wave</button>
+                <button class="example-btn" data-prompt="A star pattern">Star</button>
+                <button class="example-btn" data-prompt="An infinity symbol">Infinity</button>
+                <button class="example-btn" data-prompt="A square trajectory">Square</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html> 
