@@ -1,4 +1,4 @@
-# 2D Trajectory Diffusion Model
+# 2D Geometric Shape Trajectory Diffusion
 
 Generate 2D trajectories using text-conditioned diffusion models with mathematical patterns like sine waves, spirals, circles, and cardioids.
 
