@@ -17,7 +17,7 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from inference import TrajectoryDiffusionInference
-from dataset import TextEncoder
+from single_agent.dataset import TextEncoder
 import utils
 
 app = Flask(__name__)

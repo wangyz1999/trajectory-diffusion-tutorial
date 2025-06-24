@@ -1,6 +1,6 @@
 """
-Training Script for 2D Trajectory Diffusion Model
-Implements DDPM training with experiment management.
+Training Script for Multi-Agent 2D Trajectory Diffusion Model
+Implements DDPM training with multi-agent support and experiment management.
 """
 
 import torch
@@ -16,41 +16,44 @@ import time
 from tqdm import tqdm
 from typing import Dict, Optional
 
-from dataset import TrajectoryDataModule
-from model import create_model
+from dataset import MultiAgentTrajectoryDataModule, multi_agent_collate_fn
+from model import create_multi_agent_model
 import utils
 
 
-class TrajectoryDiffusionTrainer:
-    """Trainer for text-conditioned trajectory diffusion model."""
+class MultiAgentTrajectoryDiffusionTrainer:
+    """Trainer for text-conditioned multi-agent trajectory diffusion model."""
     
     def __init__(
         self,
         model: nn.Module,
         scheduler: DDPMScheduler,
-        data_module: TrajectoryDataModule,
+        data_module: MultiAgentTrajectoryDataModule,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         learning_rate: float = 1e-4,
         weight_decay: float = 1e-6,
-        exp_name: str = "trajectory_diffusion"
+        exp_name: str = "multi_agent_trajectory_diffusion",
+        max_agents: int = 5
     ):
         """
         Initialize the trainer.
         
         Args:
-            model: UNet1D model for trajectory diffusion
+            model: MultiAgentUNet1D model for trajectory diffusion
             scheduler: DDPM noise scheduler
             data_module: Data module with train/val/test splits
             device: Device to train on
             learning_rate: Learning rate for optimizer
             weight_decay: Weight decay for optimizer
             exp_name: Experiment name
+            max_agents: Maximum number of agents per sample
         """
         self.device = device
         self.model = model.to(device)
         self.scheduler = scheduler
         self.data_module = data_module
         self.exp_name = exp_name
+        self.max_agents = max_agents
         
         # Optimizer
         self.optimizer = optim.AdamW(
@@ -77,8 +80,8 @@ class TrajectoryDiffusionTrainer:
         """Save experiment configuration."""
         config = {
             'model_params': {
-                'in_channels': self.model.in_channels,
-                'out_channels': self.model.out_channels,
+                'max_agents': self.model.max_agents,
+                'in_channels_per_agent': self.model.in_channels_per_agent,
                 'time_emb_dim': self.model.time_emb_dim,
                 'text_emb_dim': self.model.text_emb_dim,
             },
@@ -97,6 +100,8 @@ class TrajectoryDiffusionTrainer:
                 'sequence_length': self.data_module.sequence_length,
                 'train_split': self.data_module.train_split,
                 'val_split': self.data_module.val_split,
+                'max_agents': self.max_agents,
+                'multi_agent': True,
             },
             'device': self.device,
             'exp_name': self.exp_name
@@ -106,15 +111,17 @@ class TrajectoryDiffusionTrainer:
             json.dump(config, f, indent=2)
     
     def train_step(self, batch: Dict[str, torch.Tensor]) -> float:
-        """Single training step with text conditioning."""
+        """Single training step with multi-agent text conditioning."""
         self.model.train()
         
-        trajectories = batch['trajectory'].to(self.device)  # [batch, seq_len, 2]
-        text_embeddings = batch['text_embedding'].to(self.device)  # [batch, text_emb_dim]
-        batch_size = trajectories.shape[0]
+        # Multi-agent trajectories: [batch, max_agents, seq_len, 2]
+        trajectories = batch['trajectories'].to(self.device)
+        # Agent mask: [batch, max_agents] - True where agents are active
+        agent_mask = batch['agent_mask'].to(self.device)
+        # Text embeddings: [batch, text_emb_dim]
+        text_embeddings = batch['text_embedding'].to(self.device)
         
-        # Transpose to [batch, 2, seq_len] for conv1d
-        trajectories = trajectories.transpose(1, 2)
+        batch_size = trajectories.shape[0]
         
         # Sample random timesteps
         timesteps = torch.randint(
@@ -122,24 +129,30 @@ class TrajectoryDiffusionTrainer:
             (batch_size,), device=self.device
         ).long()
         
-        # Sample noise
+        # Sample noise with same shape as trajectories
         noise = torch.randn_like(trajectories)
         
         # Add noise to trajectories
         noisy_trajectories = self.scheduler.add_noise(trajectories, noise, timesteps)
         
-        # Predict noise with text conditioning
-        noise_pred = self.model(noisy_trajectories, timesteps, text_embeddings)
+        # Predict noise with text conditioning and agent masking
+        noise_pred = self.model(noisy_trajectories, timesteps, text_embeddings, agent_mask)
         
-        # Handle potential size mismatch due to model architecture
-        if noise_pred.shape != noise.shape:
-            # Crop noise to match prediction size
-            seq_len_pred = noise_pred.shape[-1]
-            noise = noise[..., :seq_len_pred]
-            noisy_trajectories = noisy_trajectories[..., :seq_len_pred]
+        # Compute loss only for active agents
+        # Apply agent mask to both prediction and target
+        mask_expanded = agent_mask.unsqueeze(-1).unsqueeze(-1).float()  # [batch, max_agents, 1, 1]
         
-        # Compute loss
-        loss = nn.functional.mse_loss(noise_pred, noise)
+        # Masked predictions and targets
+        noise_pred_masked = noise_pred * mask_expanded
+        noise_masked = noise * mask_expanded
+        
+        # Compute MSE loss
+        loss = nn.functional.mse_loss(noise_pred_masked, noise_masked, reduction='sum')
+        
+        # Normalize by number of active elements to get proper average
+        num_active_elements = mask_expanded.sum()
+        if num_active_elements > 0:
+            loss = loss / num_active_elements
         
         # Backward pass
         self.optimizer.zero_grad()
@@ -151,19 +164,19 @@ class TrajectoryDiffusionTrainer:
         return loss.item()
     
     def validate(self) -> float:
-        """Validation step with text conditioning."""
+        """Validation step with multi-agent text conditioning."""
         self.model.eval()
         total_loss = 0.0
         num_batches = 0
         
         with torch.no_grad():
             for batch in self.data_module.val_dataloader():
-                trajectories = batch['trajectory'].to(self.device)
+                # Multi-agent trajectories and masks
+                trajectories = batch['trajectories'].to(self.device)
+                agent_mask = batch['agent_mask'].to(self.device)
                 text_embeddings = batch['text_embedding'].to(self.device)
-                batch_size = trajectories.shape[0]
                 
-                # Transpose to [batch, 2, seq_len]
-                trajectories = trajectories.transpose(1, 2)
+                batch_size = trajectories.shape[0]
                 
                 # Sample random timesteps
                 timesteps = torch.randint(
@@ -177,18 +190,21 @@ class TrajectoryDiffusionTrainer:
                 # Add noise
                 noisy_trajectories = self.scheduler.add_noise(trajectories, noise, timesteps)
                 
-                # Predict noise with text conditioning
-                noise_pred = self.model(noisy_trajectories, timesteps, text_embeddings)
+                # Predict noise with text conditioning and agent masking
+                noise_pred = self.model(noisy_trajectories, timesteps, text_embeddings, agent_mask)
                 
-                # Handle potential size mismatch due to model architecture
-                if noise_pred.shape != noise.shape:
-                    # Crop noise to match prediction size
-                    seq_len_pred = noise_pred.shape[-1]
-                    noise = noise[..., :seq_len_pred]
-                    noisy_trajectories = noisy_trajectories[..., :seq_len_pred]
+                # Compute loss only for active agents
+                mask_expanded = agent_mask.unsqueeze(-1).unsqueeze(-1).float()
+                noise_pred_masked = noise_pred * mask_expanded
+                noise_masked = noise * mask_expanded
                 
-                # Compute loss
-                loss = nn.functional.mse_loss(noise_pred, noise)
+                # Compute MSE loss
+                loss = nn.functional.mse_loss(noise_pred_masked, noise_masked, reduction='sum')
+                
+                # Normalize by number of active elements
+                num_active_elements = mask_expanded.sum()
+                if num_active_elements > 0:
+                    loss = loss / num_active_elements
                 
                 total_loss += loss.item()
                 num_batches += 1
@@ -196,16 +212,18 @@ class TrajectoryDiffusionTrainer:
         return total_loss / num_batches if num_batches > 0 else 0.0
     
     def train(self, num_epochs: int, save_every: int = 10, validate_every: int = 1, plot_every: int = 5):
-        """Main training loop for text-conditioned trajectory diffusion."""
-        print(f"🚀 Starting text-conditioned trajectory diffusion training for {num_epochs} epochs...")
+        """Main training loop for multi-agent text-conditioned trajectory diffusion."""
+        print(f"🚀 Starting multi-agent trajectory diffusion training for {num_epochs} epochs...")
         print(f"📱 Device: {self.device}")
         print(f"🔢 Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"🤖 Max agents: {self.max_agents}")
         print(f"📝 Text embedding dimension: {self.model.text_emb_dim}")
         print(f"📊 Data statistics:")
         sample_batch = self.data_module.get_sample_batch('train')
-        print(f"   • Trajectory shape: {sample_batch['trajectory'].shape}")
+        print(f"   • Multi-agent trajectory shape: {sample_batch['trajectories'].shape}")
+        print(f"   • Agent mask shape: {sample_batch['agent_mask'].shape}")
         print(f"   • Text embedding shape: {sample_batch['text_embedding'].shape}")
-        print(f"   • Pattern types: {len(set(sample_batch['label_name']))}")
+        print(f"   • Active agents in sample: {sample_batch['agent_mask'].float().mean(dim=1).mean():.2f}")
         
         # Generate initial test samples (epoch 0)
         print("🎨 Generating initial test samples...")
@@ -278,6 +296,7 @@ class TrajectoryDiffusionTrainer:
             'best_val_loss': self.best_val_loss,
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
+            'max_agents': self.max_agents,
         }
         
         filepath = os.path.join(self.exp_dir, filename)
@@ -298,61 +317,64 @@ class TrajectoryDiffusionTrainer:
         
         print(f"Checkpoint loaded: {filepath}")
     
-    def generate_test_samples(self, n_samples: int = 12) -> tuple:
-        """Generate test samples during training to monitor progress."""
+    def generate_test_samples(self, n_samples: int = 6) -> tuple:
+        """Generate multi-agent test samples during training to monitor progress."""
         self.model.eval()
         
         # Get a sample batch from validation set
         val_batch = self.data_module.get_sample_batch('val')
         
         # Select samples
-        n_samples = min(n_samples, len(val_batch['trajectory']))
-        real_trajectories = val_batch['trajectory'][:n_samples].numpy()  # [n_samples, seq_len, 2]
+        n_samples = min(n_samples, len(val_batch['trajectories']))
+        real_trajectories = val_batch['trajectories'][:n_samples].numpy()  # [n_samples, max_agents, seq_len, 2]
+        real_agent_masks = val_batch['agent_mask'][:n_samples].numpy()  # [n_samples, max_agents]
         text_embeddings = val_batch['text_embedding'][:n_samples].to(self.device)  # [n_samples, text_emb_dim]
         text_descriptions = val_batch['text_description'][:n_samples]
+        agent_masks_tensor = val_batch['agent_mask'][:n_samples].to(self.device)  # [n_samples, max_agents]
         
         # Generate trajectories using the diffusion process
         with torch.no_grad():
-            # Start from pure noise
-            generated_trajectories = torch.randn(n_samples, 2, self.data_module.sequence_length).to(self.device)
+            # Start from pure noise with same shape as real trajectories
+            generated_trajectories = torch.randn(n_samples, self.max_agents, self.data_module.sequence_length, 2).to(self.device)
             
             # Reverse diffusion process
             for t in tqdm(reversed(range(self.scheduler.config.num_train_timesteps)), 
                          desc="Generating samples", leave=False):
                 timesteps = torch.full((n_samples,), t, device=self.device).long()
                 
-                # Predict noise
-                noise_pred = self.model(generated_trajectories, timesteps, text_embeddings)
+                # Predict noise with agent masking
+                noise_pred = self.model(generated_trajectories, timesteps, text_embeddings, agent_masks_tensor)
                 
                 # Remove predicted noise
                 generated_trajectories = self.scheduler.step(
                     noise_pred, t, generated_trajectories
                 ).prev_sample
         
-        # Convert to numpy and transpose back to [seq_len, 2] format
-        generated_trajectories = generated_trajectories.cpu().numpy().transpose(0, 2, 1)  # [n_samples, seq_len, 2]
+        # Convert to numpy
+        generated_trajectories = generated_trajectories.cpu().numpy()  # [n_samples, max_agents, seq_len, 2]
         
-        return real_trajectories, generated_trajectories, text_descriptions
+        return real_trajectories, generated_trajectories, real_agent_masks, text_descriptions
     
     def plot_test_samples(self, epoch: int):
-        """Generate and plot test samples to monitor training progress."""
-        print(f"🎨 Generating test samples for epoch {epoch}...")
+        """Generate and plot multi-agent test samples to monitor training progress."""
+        print(f"🎨 Generating multi-agent test samples for epoch {epoch}...")
         
         try:
-            real_trajectories, generated_trajectories, text_descriptions = self.generate_test_samples(n_samples=6)
+            real_trajectories, generated_trajectories, agent_masks, text_descriptions = self.generate_test_samples(n_samples=6)
             
             # Plot training progress
-            save_path = os.path.join(self.exp_dir, f'training_progress_epoch_{epoch:03d}.png')
-            utils.plot_training_progress(
+            save_path = os.path.join(self.exp_dir, f'multi_agent_training_progress_epoch_{epoch:03d}.png')
+            utils.plot_multi_agent_training_progress(
                 real_trajectories, 
-                generated_trajectories, 
+                generated_trajectories,
+                agent_masks,
                 text_descriptions,
                 epoch,
                 save_path=save_path,
                 n_samples=6
             )
             
-            print(f"✅ Test samples plotted and saved for epoch {epoch}")
+            print(f"✅ Multi-agent test samples plotted and saved for epoch {epoch}")
             
         except Exception as e:
             print(f"⚠️  Failed to generate test samples: {str(e)}")
@@ -361,52 +383,48 @@ class TrajectoryDiffusionTrainer:
         self.model.train()
     
     def plot_final_results(self):
-        """Generate comprehensive final results with diverse text prompts."""
-        print("🎨 Generating comprehensive final results...")
+        """Generate comprehensive final results with diverse multi-agent text prompts."""
+        print("🎨 Generating comprehensive final multi-agent results...")
         
         try:
-            # Generate samples for each pattern type
-            pattern_types = self.data_module.full_dataset.unique_labels
+            # Generate samples for different agent configurations
+            sample_batch = self.data_module.get_sample_batch('val', 12)
+            
             final_trajectories = []
+            final_agent_masks = []
             final_descriptions = []
             
-            for pattern in pattern_types[:12]:  # Limit to 12 patterns for visualization
-                # Get sample text descriptions for this pattern
-                sample_texts = self.data_module.full_dataset.get_text_samples(pattern, 1)
-                if sample_texts:
-                    final_descriptions.append(sample_texts[0])
-                    
-                    # Encode the text
-                    text_embedding = self.data_module.encode_text([sample_texts[0]])
-                    text_embedding = text_embedding.to(self.device)
-                    
-                    # Generate trajectory
-                    with torch.no_grad():
-                        generated_traj = torch.randn(1, 2, self.data_module.sequence_length).to(self.device)
-                        
-                        # Reverse diffusion process
-                        for t in reversed(range(self.scheduler.config.num_train_timesteps)):
-                            timesteps = torch.full((1,), t, device=self.device).long()
-                            noise_pred = self.model(generated_traj, timesteps, text_embedding)
-                            generated_traj = self.scheduler.step(noise_pred, t, generated_traj).prev_sample
-                        
-                        # Convert to numpy
-                        generated_traj = generated_traj.cpu().numpy().transpose(0, 2, 1)[0]  # [seq_len, 2]
-                        final_trajectories.append(generated_traj)
+            real_trajectories = sample_batch['trajectories'][:12]
+            real_agent_masks = sample_batch['agent_mask'][:12]
+            text_embeddings = sample_batch['text_embedding'][:12].to(self.device)
+            text_descriptions = sample_batch['text_description'][:12]
+            agent_masks_tensor = sample_batch['agent_mask'][:12].to(self.device)
+            
+            # Generate trajectories
+            with torch.no_grad():
+                generated_batch = torch.randn(12, self.max_agents, self.data_module.sequence_length, 2).to(self.device)
+                
+                # Reverse diffusion process
+                for t in tqdm(reversed(range(self.scheduler.config.num_train_timesteps)), desc="Final generation"):
+                    timesteps = torch.full((12,), t, device=self.device).long()
+                    noise_pred = self.model(generated_batch, timesteps, text_embeddings, agent_masks_tensor)
+                    generated_batch = self.scheduler.step(noise_pred, t, generated_batch).prev_sample
+                
+                generated_trajectories_final = generated_batch.cpu().numpy()
             
             # Plot comprehensive results
-            if final_trajectories:
-                final_trajectories = np.array(final_trajectories)
-                save_path = os.path.join(self.exp_dir, 'comprehensive_text_conditioned_results.png')
-                utils.plot_text_conditioned_trajectories(
-                    final_trajectories,
-                    final_descriptions,
-                    title="Final Text-Conditioned Results",
-                    save_path=save_path,
-                    max_plots=12
-                )
-                
-                print(f"✅ Comprehensive final results saved")
+            save_path = os.path.join(self.exp_dir, 'comprehensive_multi_agent_results.png')
+            utils.plot_multi_agent_final_results(
+                real_trajectories.numpy(),
+                generated_trajectories_final,
+                real_agent_masks.numpy(),
+                text_descriptions,
+                title="Final Multi-Agent Text-Conditioned Results",
+                save_path=save_path,
+                max_plots=12
+            )
+            
+            print(f"✅ Comprehensive final multi-agent results saved")
             
         except Exception as e:
             print(f"⚠️  Failed to generate final results: {str(e)}")
@@ -427,7 +445,7 @@ class TrajectoryDiffusionTrainer:
             plt.plot(val_epochs, self.val_losses, label='Val Loss', alpha=0.7)
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
-        plt.title('Training and Validation Loss')
+        plt.title('Multi-Agent Training and Validation Loss')
         plt.legend()
         plt.grid(True, alpha=0.3)
         
@@ -442,30 +460,32 @@ class TrajectoryDiffusionTrainer:
         plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig(os.path.join(self.exp_dir, 'training_curves.png'), dpi=150, bbox_inches='tight')
+        plt.savefig(os.path.join(self.exp_dir, 'multi_agent_training_curves.png'), dpi=150, bbox_inches='tight')
         plt.close()
 
 
-def create_trainer(
+def create_multi_agent_trainer(
     data_dir: str = "data",
     batch_size: int = 32,
     sequence_length: int = 100,
+    max_agents: int = 5,
     learning_rate: float = 1e-4,
     num_train_timesteps: int = 1000,
     text_emb_dim: int = 384,
-    exp_name: str = "text_conditioned_trajectory_diffusion"
-) -> TrajectoryDiffusionTrainer:
-    """Create a configured trainer for text-conditioned trajectory diffusion."""
+    exp_name: str = "multi_agent_trajectory_diffusion"
+) -> MultiAgentTrajectoryDiffusionTrainer:
+    """Create a configured trainer for multi-agent text-conditioned trajectory diffusion."""
     
-    # Create data module
-    data_module = TrajectoryDataModule(
+    # Create multi-agent data module
+    data_module = MultiAgentTrajectoryDataModule(
         data_dir=data_dir,
         batch_size=batch_size,
         sequence_length=sequence_length
     )
     
-    # Create text-conditioned model
-    model = create_model(
+    # Create multi-agent model
+    model = create_multi_agent_model(
+        max_agents=max_agents,
         sequence_length=sequence_length,
         text_emb_dim=text_emb_dim
     )
@@ -480,33 +500,40 @@ def create_trainer(
     )
     
     # Create trainer
-    trainer = TrajectoryDiffusionTrainer(
+    trainer = MultiAgentTrajectoryDiffusionTrainer(
         model=model,
         scheduler=scheduler,
         data_module=data_module,
         learning_rate=learning_rate,
-        exp_name=exp_name
+        exp_name=exp_name,
+        max_agents=max_agents
     )
     
     return trainer
 
 
+# Keep the original for backward compatibility
+TrajectoryDiffusionTrainer = MultiAgentTrajectoryDiffusionTrainer
+create_trainer = create_multi_agent_trainer
+
+
 if __name__ == "__main__":
-    # Create and run text-conditioned trainer
-    trainer = create_trainer(
+    # Create and run multi-agent trainer
+    trainer = create_multi_agent_trainer(
         data_dir="data",
-        batch_size=32,
+        batch_size=64,  # Smaller batch size for multi-agent due to increased memory usage
         sequence_length=100,
+        max_agents=5,
         learning_rate=1e-4,
         num_train_timesteps=1000,
         text_emb_dim=384,
-        exp_name="text_conditioned_trajectory_diffusion"
+        exp_name="multi_agent_trajectory_diffusion"
     )
     
-    # Train the text-conditioned model
+    # Train the multi-agent model
     trainer.train(
         num_epochs=50,
-        save_every=10,
+        save_every=1,
         validate_every=1,
-        plot_every=5  # Generate test plots every 5 epochs
+        plot_every=1  # Generate test plots every 5 epochs
     ) 

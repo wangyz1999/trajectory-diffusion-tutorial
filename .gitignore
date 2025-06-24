@@ -193,5 +193,7 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-data
-output    
+single_agent/data
+single_agent/output
+multi_agent/data
+multi_agent/output

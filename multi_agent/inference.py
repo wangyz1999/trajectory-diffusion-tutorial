@@ -13,7 +13,7 @@ from tqdm import tqdm
 from typing import List, Optional, Tuple
 import argparse
 
-from dataset import TrajectoryDataModule, TextEncoder
+from single_agent.dataset import TrajectoryDataModule, TextEncoder
 from model import create_model
 from diffusers import DDPMScheduler
 import utils
