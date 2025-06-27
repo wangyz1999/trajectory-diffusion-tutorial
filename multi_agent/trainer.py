@@ -608,7 +608,7 @@ create_trainer = create_multi_agent_trainer
 if __name__ == "__main__":
     # Create and run multi-agent trainer with CFG
     trainer = create_multi_agent_trainer(
-        data_dir="data",
+        data_dir="data_no_noise",
         batch_size=64,  # Smaller batch size for multi-agent due to increased memory usage
         sequence_length=100,
         max_agents=5,

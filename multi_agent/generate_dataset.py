@@ -588,12 +588,22 @@ def visualize_multi_agent_samples(trajectories: np.ndarray, agent_masks: np.ndar
 
 if __name__ == "__main__":
     # Generate multi-agent dataset
+    # generate_dataset(
+    #     n_samples=300000,
+    #     n_points=100,
+    #     output_dir="data",
+    #     add_noise_prob=0.3,
+    #     noise_level=0.05,
+    #     min_agents=1,
+    #     max_agents=5
+    # ) 
+
     generate_dataset(
         n_samples=300000,
         n_points=100,
-        output_dir="data",
-        add_noise_prob=0.3,
-        noise_level=0.05,
+        output_dir="data_no_noise",
+        add_noise_prob=0,
+        noise_level=0.0,
         min_agents=1,
         max_agents=5
     ) 
