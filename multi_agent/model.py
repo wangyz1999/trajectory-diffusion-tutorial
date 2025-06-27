@@ -218,6 +218,9 @@ class MultiAgentUNet1D(nn.Module):
             nn.Linear(time_emb_dim, time_emb_dim)
         )
         
+        # Text embedding preprocessing for CFG support
+        self.text_null_embedding = nn.Parameter(torch.zeros(text_emb_dim))
+        
         # Initial projection
         self.init_conv = nn.Conv1d(self.in_channels, base_channels, 7, padding=3)
         
@@ -302,18 +305,22 @@ class MultiAgentUNet1D(nn.Module):
             nn.Conv1d(base_channels, self.out_channels, 7, padding=3)
         )
     
-    def forward(self, x: torch.Tensor, timestep: torch.Tensor, text_emb: torch.Tensor, agent_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, timestep: torch.Tensor, text_emb: Optional[torch.Tensor] = None, agent_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             x: Input multi-agent trajectories [batch, max_agents, sequence_length, 2]
             timestep: Diffusion timestep [batch]
-            text_emb: Text embedding [batch, text_emb_dim]
+            text_emb: Text embedding [batch, text_emb_dim] or None for unconditional
             agent_mask: Boolean mask for active agents [batch, max_agents]
         
         Returns:
             Predicted noise [batch, max_agents, sequence_length, 2]
         """
         batch_size, max_agents, seq_len, coord_dim = x.shape
+        
+        # Handle unconditional generation for CFG
+        if text_emb is None:
+            text_emb = self.text_null_embedding.expand(batch_size, -1)
         
         # Reshape to [batch, max_agents * coord_dim, seq_len] for 1D conv processing
         x_reshaped = x.permute(0, 1, 3, 2).contiguous()  # [batch, max_agents, 2, seq_len]
@@ -396,6 +403,67 @@ class MultiAgentUNet1D(nn.Module):
             output = output * mask_expanded.float()
         
         return output
+    
+    def forward_with_cfg(
+        self, 
+        x: torch.Tensor, 
+        timestep: torch.Tensor, 
+        text_emb: torch.Tensor, 
+        agent_mask: Optional[torch.Tensor] = None,
+        guidance_scale: float = 1.0
+    ) -> torch.Tensor:
+        """
+        Forward pass with classifier-free guidance.
+        
+        Args:
+            x: Input multi-agent trajectories [batch, max_agents, sequence_length, 2]
+            timestep: Diffusion timestep [batch]
+            text_emb: Text embedding [batch, text_emb_dim]
+            agent_mask: Boolean mask for active agents [batch, max_agents]
+            guidance_scale: CFG guidance scale (0=unconditional, 1=normal, >1=over-guided)
+        
+        Returns:
+            Predicted noise with CFG applied [batch, max_agents, sequence_length, 2]
+        """
+        if guidance_scale == 1.0:
+            # No CFG, just regular conditional forward pass
+            return self.forward(x, timestep, text_emb, agent_mask)
+        
+        # CFG requires both conditional and unconditional predictions
+        batch_size = x.shape[0]
+        
+        # Duplicate inputs for conditional and unconditional predictions
+        x_combined = torch.cat([x, x], dim=0)  # [2*batch, ...]
+        timestep_combined = torch.cat([timestep, timestep], dim=0)  # [2*batch]
+        
+        # Conditional text embeddings for first half, None for second half (unconditional)
+        text_emb_conditional = text_emb  # [batch, text_emb_dim]
+        text_emb_unconditional = None  # Will use null embedding
+        
+        # Agent mask duplication
+        if agent_mask is not None:
+            agent_mask_combined = torch.cat([agent_mask, agent_mask], dim=0)  # [2*batch, max_agents]
+        else:
+            agent_mask_combined = None
+        
+        # Combined forward pass - more efficient than separate calls
+        # First batch is conditional, second batch is unconditional
+        text_emb_combined = torch.cat([
+            text_emb_conditional,
+            self.text_null_embedding.expand(batch_size, -1)
+        ], dim=0)  # [2*batch, text_emb_dim]
+        
+        # Single forward pass for both conditions
+        noise_pred_combined = self.forward(x_combined, timestep_combined, text_emb_combined, agent_mask_combined)
+        
+        # Split predictions
+        noise_pred_conditional = noise_pred_combined[:batch_size]    # [batch, ...]
+        noise_pred_unconditional = noise_pred_combined[batch_size:]  # [batch, ...]
+        
+        # Apply classifier-free guidance
+        noise_pred = noise_pred_unconditional + guidance_scale * (noise_pred_conditional - noise_pred_unconditional)
+        
+        return noise_pred
 
 
 def create_multi_agent_model(

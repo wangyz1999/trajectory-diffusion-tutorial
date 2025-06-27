@@ -815,6 +815,301 @@ def print_metrics_comparison(real_metrics: Dict[str, float], generated_metrics: 
         print(f"{key:20s}: Real={real_val:.4f}, Gen={gen_val:.4f}, Diff={diff_pct:.1f}%")
 
 
+def plot_cfg_comparison(
+    real_trajectories: np.ndarray,
+    generated_trajectories_dict: Dict[float, np.ndarray],
+    agent_masks: np.ndarray,
+    text_descriptions: List[str],
+    guidance_scales: List[float],
+    epoch: int,
+    save_path: Optional[str] = None,
+    figsize: Tuple[int, int] = (24, 16),  # Larger figure size
+    n_samples: int = 4
+) -> None:
+    """
+    Plot comparison of CFG guidance scales for multi-agent trajectories.
+    
+    Args:
+        real_trajectories: Real multi-agent trajectories [N, max_agents, seq_len, 2]
+        generated_trajectories_dict: Dict mapping guidance scales to generated trajectories
+        agent_masks: Boolean masks for active agents [N, max_agents]
+        text_descriptions: Text descriptions
+        guidance_scales: List of guidance scales used
+        epoch: Current training epoch
+        save_path: Path to save plot
+        figsize: Figure size
+        n_samples: Number of samples to show
+    """
+    n_samples = min(n_samples, len(real_trajectories))
+    n_guidance_scales = len(guidance_scales)
+    
+    # Create subplot layout: rows = samples, cols = real + guidance scales
+    cols = 1 + n_guidance_scales  # Real + CFG scales
+    rows = n_samples
+    
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    if rows == 1:
+        axes = axes.reshape(1, -1)
+    if cols == 1:
+        axes = axes.reshape(-1, 1)
+    
+    colors = plt.cm.tab10(np.linspace(0, 1, 10))
+    
+    for sample_idx in range(n_samples):
+        # Real trajectories (first column)
+        ax_real = axes[sample_idx, 0]
+        real_sample = real_trajectories[sample_idx]
+        real_mask = agent_masks[sample_idx]
+        
+        active_count = 0
+        for agent_idx, (traj, is_active) in enumerate(zip(real_sample, real_mask)):
+            if is_active:
+                color = colors[agent_idx % len(colors)]
+                ax_real.plot(traj[:, 0], traj[:, 1], color=color, alpha=0.8, linewidth=3, linestyle='-')
+                ax_real.plot(traj[0, 0], traj[0, 1], 's', color=color, markersize=10)
+                ax_real.plot(traj[-1, 0], traj[-1, 1], 'o', color=color, markersize=10)
+                active_count += 1
+        
+        ax_real.set_aspect('equal')
+        ax_real.grid(True, alpha=0.3)
+        ax_real.set_xlim(-1.2, 1.2)
+        ax_real.set_ylim(-1.2, 1.2)
+        ax_real.set_title(f'Real\n({active_count} agents)', fontsize=14, fontweight='bold')
+        
+        # Generated trajectories with different CFG scales
+        for cfg_idx, cfg_scale in enumerate(guidance_scales):
+            ax_gen = axes[sample_idx, cfg_idx + 1]
+            gen_sample = generated_trajectories_dict[cfg_scale][sample_idx]
+            gen_mask = agent_masks[sample_idx]  # Use same mask
+            
+            active_count = 0
+            for agent_idx, (traj, is_active) in enumerate(zip(gen_sample, gen_mask)):
+                if is_active:
+                    color = colors[agent_idx % len(colors)]
+                    # Use solid lines for all plots
+                    ax_gen.plot(traj[:, 0], traj[:, 1], color=color, alpha=0.8, 
+                              linewidth=3, linestyle='-')
+                    ax_gen.plot(traj[0, 0], traj[0, 1], '^', color=color, markersize=10)
+                    ax_gen.plot(traj[-1, 0], traj[-1, 1], 'v', color=color, markersize=10)
+                    active_count += 1
+            
+            ax_gen.set_aspect('equal')
+            ax_gen.grid(True, alpha=0.3)
+            ax_gen.set_xlim(-1.2, 1.2)
+            ax_gen.set_ylim(-1.2, 1.2)
+            
+            # Color-code title based on CFG scale
+            if cfg_scale == 0.0:
+                title_color = 'red'
+                scale_desc = 'Unconditional'
+            elif cfg_scale == 1.0:
+                title_color = 'blue'
+                scale_desc = 'Standard'
+            else:
+                title_color = 'green'
+                scale_desc = 'Over-guided'
+            
+            ax_gen.set_title(f'CFG {cfg_scale}\n{scale_desc}', fontsize=14, 
+                           fontweight='bold', color=title_color)
+        
+        # Add text description as a multi-line box
+        if sample_idx < len(text_descriptions):
+            text = text_descriptions[sample_idx]
+            
+            # Break text into multiple lines (approximately 30 characters per line)
+            import textwrap
+            wrapped_text = textwrap.fill(text, width=30)
+            
+            # Position text box to the left of the plot
+            fig.text(0.02, 0.85 - sample_idx * (0.75 / n_samples), wrapped_text, 
+                    fontsize=12, ha='left', va='top', style='italic',
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.8, edgecolor='black'))
+    
+    plt.suptitle(f'Classifier-Free Guidance Comparison (Epoch {epoch})', fontsize=18, fontweight='bold')
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.92, left=0.18)  # Make room for suptitle and text boxes
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"CFG comparison plot saved: {save_path}")
+        plt.close()  # Close to save memory
+    else:
+        plt.show()
+
+
+def plot_cfg_ablation_study(
+    trajectories_dict: Dict[float, np.ndarray],
+    agent_masks: np.ndarray,
+    text_descriptions: List[str],
+    guidance_scales: List[float],
+    save_path: Optional[str] = None,
+    figsize: Tuple[int, int] = (24, 6)  # Larger horizontal layout
+) -> None:
+    """
+    Plot ablation study showing the effect of different CFG scales.
+    
+    Args:
+        trajectories_dict: Dict mapping guidance scales to generated trajectories
+        agent_masks: Boolean masks for active agents
+        text_descriptions: Text descriptions
+        guidance_scales: List of guidance scales
+        save_path: Path to save plot
+        figsize: Figure size
+    """
+    n_scales = len(guidance_scales)
+    
+    # Show one sample with all CFG scales
+    sample_idx = 0
+    
+    fig, axes = plt.subplots(1, n_scales, figsize=figsize)
+    if n_scales == 1:
+        axes = [axes]
+    
+    colors = plt.cm.tab10(np.linspace(0, 1, 10))
+    
+    for cfg_idx, cfg_scale in enumerate(guidance_scales):
+        ax = axes[cfg_idx]
+        sample_trajs = trajectories_dict[cfg_scale][sample_idx]
+        sample_mask = agent_masks[sample_idx]
+        
+        # Plot each active agent's trajectory
+        for agent_idx, (traj, is_active) in enumerate(zip(sample_trajs, sample_mask)):
+            if is_active:
+                color = colors[agent_idx % len(colors)]
+                # Use solid lines for all plots
+                ax.plot(traj[:, 0], traj[:, 1], color=color, linewidth=4, alpha=0.8, 
+                       linestyle='-')
+                ax.plot(traj[0, 0], traj[0, 1], 's', color=color, markersize=12)
+                ax.plot(traj[-1, 0], traj[-1, 1], 'o', color=color, markersize=12)
+        
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(-1.2, 1.2)
+        ax.set_ylim(-1.2, 1.2)
+        
+        # Color-code title based on CFG scale
+        if cfg_scale == 0.0:
+            title_color = 'red'
+        elif cfg_scale == 1.0:
+            title_color = 'blue'
+        else:
+            title_color = 'green'
+        
+        ax.set_title(f'CFG Scale: {cfg_scale}', fontsize=16, fontweight='bold', color=title_color)
+    
+    # Add text description with proper wrapping
+    if text_descriptions:
+        import textwrap
+        wrapped_text = textwrap.fill(text_descriptions[sample_idx], width=80)
+        fig.suptitle(f'CFG Ablation Study\nText: "{wrapped_text}"', 
+                    fontsize=16, fontweight='bold')
+    else:
+        fig.suptitle('CFG Ablation Study', fontsize=16, fontweight='bold')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"CFG ablation study plot saved: {save_path}")
+        plt.close()
+    else:
+        plt.show()
+
+
+def analyze_cfg_effects(
+    trajectories_dict: Dict[float, np.ndarray],
+    agent_masks: np.ndarray,
+    guidance_scales: List[float]
+) -> Dict[str, any]:
+    """
+    Analyze the effects of different CFG guidance scales on trajectory statistics.
+    
+    Args:
+        trajectories_dict: Dict mapping guidance scales to trajectories
+        agent_masks: Boolean masks for active agents
+        guidance_scales: List of guidance scales
+        
+    Returns:
+        Dictionary of analysis results
+    """
+    analysis = {}
+    
+    for cfg_scale in guidance_scales:
+        trajectories = trajectories_dict[cfg_scale]
+        
+        # Calculate metrics only for active agents
+        active_trajectories = []
+        for sample_idx, (sample_trajs, sample_mask) in enumerate(zip(trajectories, agent_masks)):
+            for agent_idx, (traj, is_active) in enumerate(zip(sample_trajs, sample_mask)):
+                if is_active:
+                    active_trajectories.append(traj)
+        
+        if active_trajectories:
+            active_trajectories = np.array(active_trajectories)
+            
+            # Path lengths
+            path_lengths = []
+            for traj in active_trajectories:
+                diffs = np.diff(traj, axis=0)
+                lengths = np.sqrt(np.sum(diffs**2, axis=1))
+                path_lengths.append(np.sum(lengths))
+            
+            # Displacement (start to end distance)
+            displacements = []
+            for traj in active_trajectories:
+                disp = np.linalg.norm(traj[-1] - traj[0])
+                displacements.append(disp)
+            
+            # Trajectory spread (standard deviation of positions)
+            all_positions = active_trajectories.reshape(-1, 2)
+            position_std = np.std(all_positions, axis=0)
+            
+            analysis[cfg_scale] = {
+                'path_length_mean': np.mean(path_lengths),
+                'path_length_std': np.std(path_lengths),
+                'displacement_mean': np.mean(displacements),
+                'displacement_std': np.std(displacements),
+                'position_std_x': position_std[0],
+                'position_std_y': position_std[1],
+                'n_active_trajectories': len(active_trajectories)
+            }
+        else:
+            analysis[cfg_scale] = {
+                'path_length_mean': 0,
+                'path_length_std': 0,
+                'displacement_mean': 0,
+                'displacement_std': 0,
+                'position_std_x': 0,
+                'position_std_y': 0,
+                'n_active_trajectories': 0
+            }
+    
+    return analysis
+
+
+def print_cfg_analysis(analysis: Dict[str, any]) -> None:
+    """Print CFG analysis results in a formatted table."""
+    print("\n📊 Classifier-Free Guidance Analysis:")
+    print("=" * 80)
+    print(f"{'CFG Scale':<10} {'Path Len':<12} {'Displacement':<14} {'Pos Std X':<12} {'Pos Std Y':<12}")
+    print("-" * 80)
+    
+    for cfg_scale in sorted(analysis.keys()):
+        metrics = analysis[cfg_scale]
+        print(f"{cfg_scale:<10.1f} "
+              f"{metrics['path_length_mean']:<12.3f} "
+              f"{metrics['displacement_mean']:<14.3f} "
+              f"{metrics['position_std_x']:<12.3f} "
+              f"{metrics['position_std_y']:<12.3f}")
+    
+    print("-" * 80)
+    print(f"Higher CFG scales typically lead to:")
+    print(f"  • More structured/regular trajectories")
+    print(f"  • Better adherence to text descriptions")
+    print(f"  • Potentially reduced diversity")
+    print(f"CFG Scale 0.0 ignores text completely (unconditional generation)")
+
+
 if __name__ == "__main__":
     # Test utility functions
     print("Testing utility functions...")
